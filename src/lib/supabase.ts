@@ -1,18 +1,51 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Match, Goal } from '../types/football';
 
+export const DEFAULT_SUPABASE_URL = 'https://vzvywackibprcuhcjwhv.supabase.co';
+export const DEFAULT_SUPABASE_KEY = 'sb_publishable_zpGtQpsIj7TCAYej-w20sw_xqS6oU6X';
+
 // Default from environment variables or custom configuration
-const envUrl = import.meta.env.VITE_SUPABASE_URL;
-const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const envUrl = (import.meta.env.VITE_SUPABASE_URL || '').trim() || DEFAULT_SUPABASE_URL;
+const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim() || DEFAULT_SUPABASE_KEY;
 
 export const getSupabaseConfig = () => {
-  const customUrl = localStorage.getItem('supabase_project_url') || envUrl || '';
-  const customKey = localStorage.getItem('supabase_anon_key') || envKey || '';
+  let customUrl = '';
+  let customKey = '';
+
+  if (typeof window !== 'undefined') {
+    try {
+      const storedUrl = (localStorage.getItem('supabase_project_url') || '').trim();
+      const storedKey = (localStorage.getItem('supabase_anon_key') || '').trim();
+
+      // Clean up any bad or placeholder values
+      if (!storedUrl || !storedUrl.startsWith('https://') || storedUrl.includes('your-project-id') || storedUrl.includes('xyzabcdef')) {
+        localStorage.setItem('supabase_project_url', envUrl);
+        customUrl = envUrl;
+      } else {
+        customUrl = storedUrl;
+      }
+
+      if (!storedKey || storedKey.length < 20 || storedKey.includes('your-anon-key') || storedKey.includes('your-key')) {
+        localStorage.setItem('supabase_anon_key', envKey);
+        customKey = envKey;
+      } else {
+        customKey = storedKey;
+      }
+    } catch {
+      customUrl = envUrl;
+      customKey = envKey;
+    }
+  } else {
+    customUrl = envUrl;
+    customKey = envKey;
+  }
+
   const isConfigured = Boolean(
     customUrl &&
     customKey &&
     customUrl.startsWith('https://') &&
-    !customUrl.includes('your-project-id')
+    !customUrl.includes('your-project-id') &&
+    customKey.length > 10
   );
 
   return {
@@ -45,9 +78,12 @@ export const getSupabase = (): SupabaseClient | null => {
   }
 };
 
-export const testSupabaseConnection = async (): Promise<{ success: boolean; message: string }> => {
-  const client = getSupabase();
-  if (!client) {
+export const testSupabaseConnection = async (explicitUrl?: string, explicitKey?: string): Promise<{ success: boolean; message: string }> => {
+  const config = getSupabaseConfig();
+  const url = (explicitUrl || '').trim() || config.url || DEFAULT_SUPABASE_URL;
+  const anonKey = (explicitKey || '').trim() || config.anonKey || DEFAULT_SUPABASE_KEY;
+
+  if (!url || !anonKey || !url.startsWith('https://') || url.includes('your-project-id')) {
     return {
       success: false,
       message: 'Faltan las credenciales (URL de proyecto y clave anon pública).',
@@ -55,6 +91,7 @@ export const testSupabaseConnection = async (): Promise<{ success: boolean; mess
   }
 
   try {
+    const client = createClient(url, anonKey);
     const { error } = await client.from('matches').select('id').limit(1);
     if (error) {
       if (error.code === '42P01') {
@@ -65,6 +102,15 @@ export const testSupabaseConnection = async (): Promise<{ success: boolean; mess
       }
       return { success: false, message: `Error Supabase: ${error.message}` };
     }
+
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('supabase_project_url', url);
+      localStorage.setItem('supabase_anon_key', anonKey);
+    }
+    cachedClient = client;
+    lastUrl = url;
+    lastKey = anonKey;
+
     return { success: true, message: '¡Conexión establecida con éxito con tu base de datos Supabase!' };
   } catch (err: any) {
     return { success: false, message: err.message || 'Error de conexión a Supabase.' };
@@ -236,5 +282,54 @@ export const deleteGoalFromSupabase = async (goalId: string): Promise<boolean> =
   if (!client) return false;
 
   const { error } = await client.from('goals').delete().eq('id', goalId);
+  return !error;
+};
+
+export const saveMatchesBatchToSupabase = async (matchList: Match[]): Promise<boolean> => {
+  if (matchList.length === 0) return true;
+  const client = getSupabase();
+  if (!client) return false;
+
+  const rows = matchList.map((m) => ({
+    id: m.id,
+    jornada: m.jornada,
+    date: m.date,
+    home_team_id: m.homeTeamId,
+    away_team_id: m.awayTeamId,
+    home_score: m.homeScore,
+    away_score: m.awayScore,
+    competition: m.competition,
+    stadium: m.stadium,
+    first_goal_team_id: m.firstGoalTeamId || 'NONE',
+    notes: m.notes || null,
+  }));
+
+  const { error } = await client.from('matches').upsert(rows);
+  return !error;
+};
+
+export const saveGoalsBatchToSupabase = async (goalList: Goal[]): Promise<boolean> => {
+  if (goalList.length === 0) return true;
+  const client = getSupabase();
+  if (!client) return false;
+
+  const rows = goalList.map((g) => ({
+    id: g.id,
+    match_id: g.matchId,
+    team_id: g.teamId,
+    conceding_team_id: g.concedingTeamId,
+    scorer: g.scorer,
+    assister: g.assister || null,
+    minute: g.minute,
+    minute_interval: g.minuteInterval,
+    score_before: g.scoreBefore,
+    tactical_phase: g.tacticalPhase,
+    tactical_subtype: g.tacticalSubtype,
+    pitch_zone: g.pitchZone || null,
+    body_part: g.bodyPart || null,
+    notes: g.notes || null,
+  }));
+
+  const { error } = await client.from('goals').upsert(rows);
   return !error;
 };

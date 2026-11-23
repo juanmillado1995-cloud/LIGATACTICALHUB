@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   Sparkles,
   Check,
+  Camera,
 } from 'lucide-react';
 import { Match, Goal, TACTICAL_CATEGORIES } from '../types/football';
 import { LEAGUE_TEAMS, getTeamById } from '../data/teams';
@@ -27,6 +28,7 @@ interface MatchesListProps {
   onOpenNewGoalForMatch: (matchId: string, teamId?: string) => void;
   onEditGoal: (goal: Goal) => void;
   onDeleteGoal: (goalId: string) => void;
+  onOpenScanModal?: () => void;
 }
 
 export const MatchesList: React.FC<MatchesListProps> = ({
@@ -40,6 +42,7 @@ export const MatchesList: React.FC<MatchesListProps> = ({
   onOpenNewGoalForMatch,
   onEditGoal,
   onDeleteGoal,
+  onOpenScanModal,
 }) => {
   const [viewMode, setViewMode] = useState<'matches' | 'goals'>('matches');
   const [searchTerm, setSearchTerm] = useState('');
@@ -167,13 +170,25 @@ export const MatchesList: React.FC<MatchesListProps> = ({
           )}
 
           {viewMode === 'matches' && (
-            <button
-              onClick={onOpenNewMatch}
-              className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow transition cursor-pointer"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>+ Nueva Jornada</span>
-            </button>
+            <>
+              {onOpenScanModal && (
+                <button
+                  onClick={onOpenScanModal}
+                  title="Subir o pegar una captura de partido (BeSoccer, RFEF, móvil o PC) para registrar automáticamente jornada, resultado, minutos, goleadores y asistentes con IA"
+                  className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-black rounded-xl bg-gradient-to-r from-blue-600 via-indigo-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white shadow-lg shadow-indigo-600/30 border border-indigo-400/40 transition active:scale-95 cursor-pointer"
+                >
+                  <Camera className="w-3.5 h-3.5 text-blue-200" />
+                  <span>📸 Auto-Registro por Captura (IA)</span>
+                </button>
+              )}
+              <button
+                onClick={onOpenNewMatch}
+                className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>+ Nueva Jornada Manual</span>
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -260,6 +275,48 @@ export const MatchesList: React.FC<MatchesListProps> = ({
         </div>
       </div>
 
+      {/* Quick Jornadas Pills */}
+      {viewMode === 'matches' && (
+        <div className="flex items-center gap-1.5 overflow-x-auto p-2 rounded-2xl bg-slate-900/60 border border-slate-800/80">
+          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider px-2 whitespace-nowrap">
+            Jornadas:
+          </span>
+          <button
+            type="button"
+            onClick={() => setJornadaFilter('ALL')}
+            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer ${
+              jornadaFilter === 'ALL'
+                ? 'bg-blue-600 text-white shadow-md'
+                : 'bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white border border-slate-800'
+            }`}
+          >
+            Todas ({matches.length})
+          </button>
+          {jornadasList.map((j) => {
+            const count = matches.filter((m) => m.jornada === j).length;
+            const isLatest = j === Math.max(...jornadasList);
+            const isSelected = jornadaFilter === String(j);
+            return (
+              <button
+                key={j}
+                type="button"
+                onClick={() => setJornadaFilter(String(j))}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition whitespace-nowrap cursor-pointer flex items-center gap-1.5 ${
+                  isSelected
+                    ? 'bg-blue-600 text-white shadow-md ring-2 ring-blue-400'
+                    : isLatest
+                    ? 'bg-amber-950/80 text-amber-300 border border-amber-600/60 hover:bg-amber-900/80'
+                    : 'bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-800'
+                }`}
+              >
+                <span>J{j}</span>
+                <span className="text-[10px] opacity-75">({count})</span>
+                {isLatest && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {/* VIEW 1: GOALS TABLE */}
       {viewMode === 'goals' && (

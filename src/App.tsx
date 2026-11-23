@@ -12,6 +12,7 @@ import { GoalModal } from './components/GoalModal';
 import { MatchModal } from './components/MatchModal';
 import { StandaloneHtmlModal } from './components/StandaloneHtmlModal';
 import { SupabaseModal } from './components/SupabaseModal';
+import { ScanMatchScreenshotModal } from './components/ScanMatchScreenshotModal';
 import {
   getSupabaseConfig,
   saveMatchToSupabase,
@@ -20,6 +21,8 @@ import {
   deleteGoalFromSupabase,
   fetchMatchesFromSupabase,
   fetchGoalsFromSupabase,
+  saveMatchesBatchToSupabase,
+  saveGoalsBatchToSupabase,
 } from './lib/supabase';
 
 export default function App() {
@@ -31,7 +34,9 @@ export default function App() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed;
+          const existingIds = new Set(parsed.map((m: Match) => m.id));
+          const missing = INITIAL_MATCHES.filter((m) => !existingIds.has(m.id));
+          return [...parsed, ...missing];
         }
       }
       return INITIAL_MATCHES;
@@ -42,13 +47,40 @@ export default function App() {
 
   const [goals, setGoals] = useState<Goal[]>(() => {
     try {
-      const saved = localStorage.getItem('liga_tactical_goals_v4');
+      const saved = localStorage.getItem('liga_tactical_goals_v5');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          const existingIds = new Set(parsed.map((g: Goal) => g.id));
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const initialMap = new Map(INITIAL_GOALS.map((g) => [g.id, g]));
+          const upgraded = parsed.map((g: Goal) => {
+            const init = initialMap.get(g.id);
+            if (init && (g.tacticalPhase === 'PENDIENTE' || !g.tacticalPhase || g.tacticalSubtype === 'Sin definir')) {
+              return { ...g, tacticalPhase: init.tacticalPhase, tacticalSubtype: init.tacticalSubtype, assister: g.assister || init.assister };
+            }
+            return g;
+          });
+          const existingIds = new Set(upgraded.map((g: Goal) => g.id));
           const missing = INITIAL_GOALS.filter((g) => !existingIds.has(g.id));
-          return [...parsed, ...missing];
+          return [...upgraded, ...missing];
+        }
+      }
+      const v4 = localStorage.getItem('liga_tactical_goals_v4');
+      if (v4) {
+        const parsed = JSON.parse(v4);
+        if (Array.isArray(parsed)) {
+          const initialMap = new Map(INITIAL_GOALS.map((g) => [g.id, g]));
+          const upgraded = parsed.map((g: Goal) => {
+            const init = initialMap.get(g.id);
+            if (init && (g.tacticalPhase === 'PENDIENTE' || !g.tacticalPhase || g.tacticalSubtype === 'Sin definir')) {
+              return { ...g, tacticalPhase: init.tacticalPhase, tacticalSubtype: init.tacticalSubtype, assister: g.assister || init.assister };
+            }
+            return g;
+          });
+          const existingIds = new Set(upgraded.map((g: Goal) => g.id));
+          const missing = INITIAL_GOALS.filter((g) => !existingIds.has(g.id));
+          const full = [...upgraded, ...missing];
+          localStorage.setItem('liga_tactical_goals_v5', JSON.stringify(full));
+          return full;
         }
       }
       return INITIAL_GOALS;
@@ -71,26 +103,47 @@ export default function App() {
 
   const [isCodeModalOpen, setIsCodeModalOpen] = useState(false);
   const [isSupabaseModalOpen, setIsSupabaseModalOpen] = useState(false);
+  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  const supabaseConfig = getSupabaseConfig();
-  const isSupabaseConnected = supabaseConfig.isConfigured;
+  const [isSupabaseConnected, setIsSupabaseConnected] = useState<boolean>(() => {
+    return getSupabaseConfig().isConfigured;
+  });
 
-  // On mount, if Supabase is configured, fetch remote data
-  useEffect(() => {
-    if (supabaseConfig.isConfigured) {
-      fetchMatchesFromSupabase().then((remoteMatches) => {
-        if (remoteMatches && remoteMatches.length > 0) {
-          setMatches(remoteMatches);
+  const refreshSupabaseData = async () => {
+    const cfg = getSupabaseConfig();
+    setIsSupabaseConnected(cfg.isConfigured);
+    if (cfg.isConfigured) {
+      const [remoteMatches, remoteGoals] = await Promise.all([
+        fetchMatchesFromSupabase(),
+        fetchGoalsFromSupabase(),
+      ]);
+
+      if (remoteMatches && remoteMatches.length > 0) {
+        const remoteIds = new Set(remoteMatches.map((m) => m.id));
+        const missingOfficial = INITIAL_MATCHES.filter((m) => !remoteIds.has(m.id));
+        setMatches([...remoteMatches, ...missingOfficial]);
+        if (missingOfficial.length > 0) {
+          await saveMatchesBatchToSupabase(missingOfficial);
         }
-      });
-      fetchGoalsFromSupabase().then((remoteGoals) => {
-        if (remoteGoals && remoteGoals.length > 0) {
-          setGoals(remoteGoals);
+      }
+
+      if (remoteGoals && remoteGoals.length > 0) {
+        const remoteGoalIds = new Set(remoteGoals.map((g) => g.id));
+        const missingOfficialGoals = INITIAL_GOALS.filter((g) => !remoteGoalIds.has(g.id));
+        const mergedGoals = [...remoteGoals, ...missingOfficialGoals];
+        setGoals(mergedGoals);
+        if (missingOfficialGoals.length > 0) {
+          await saveGoalsBatchToSupabase(missingOfficialGoals);
         }
-      });
+      }
     }
-  }, [supabaseConfig.isConfigured]);
+  };
+
+  // On mount and when config changes, fetch remote data
+  useEffect(() => {
+    refreshSupabaseData();
+  }, []);
 
   // Sync to localStorage
   useEffect(() => {
@@ -103,7 +156,7 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem('liga_tactical_goals_v4', JSON.stringify(goals));
+      localStorage.setItem('liga_tactical_goals_v5', JSON.stringify(goals));
     } catch (e) {
       console.error('Failed to save goals', e);
     }
@@ -123,11 +176,12 @@ export default function App() {
     }
   };
 
-  // Restore the 90 official matches extracted from the user's screenshots
+  // Restore the 126 official matches extracted from the user's screenshots
   const handleRestoreOfficialMatches = () => {
-    if (confirm('¿Cargar las 9 jornadas oficiales (90 partidos) registradas a partir de tus actas?')) {
+    if (confirm('¿Cargar los 126 partidos oficiales (J1-J13) registrados a partir de tus actas?')) {
       setMatches(INITIAL_MATCHES);
-      showToast('90 partidos oficiales (Jornadas 1 a 9) cargados.');
+      setGoals(INITIAL_GOALS);
+      showToast('126 partidos oficiales cargados.');
     }
   };
 
@@ -239,6 +293,30 @@ export default function App() {
     showToast('Partido eliminado.');
   };
 
+  const handleSaveScannedMatchAndGoals = (newMatch: Match, newGoals: Goal[]) => {
+    setMatches((prev) => {
+      const exists = prev.some((m) => m.id === newMatch.id);
+      if (exists) return prev.map((m) => (m.id === newMatch.id ? newMatch : m));
+      return [...prev, newMatch];
+    });
+    saveMatchToSupabase(newMatch);
+
+    if (newGoals.length > 0) {
+      setGoals((prev) => {
+        const newGoalIds = new Set(newGoals.map((g) => g.id));
+        const filtered = prev.filter((g) => !newGoalIds.has(g.id));
+        return [...filtered, ...newGoals];
+      });
+      newGoals.forEach((g) => saveGoalToSupabase(g));
+    }
+
+    confetti({
+      particleCount: 50,
+      spread: 70,
+      origin: { y: 0.7 },
+    });
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 selection:bg-blue-600 selection:text-white">
       {/* Toast Notification */}
@@ -263,6 +341,7 @@ export default function App() {
         onClearData={handleClearData}
         totalMatches={matches.length}
         totalGoals={goals.length}
+        onOpenScanModal={() => setIsScanModalOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -284,7 +363,7 @@ export default function App() {
                 onClick={handleRestoreOfficialMatches}
                 className="px-3.5 py-2 text-xs font-bold rounded-xl bg-blue-600 hover:bg-blue-500 text-white shadow transition cursor-pointer"
               >
-                Restaurar 90 Partidos Oficiales (J1-J9)
+                Restaurar 126 Partidos Oficiales (J1-J13)
               </button>
               <button
                 onClick={handleOpenNewMatch}
@@ -295,6 +374,45 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* Banner if any official matches (e.g. J11 / J12) are missing from local state / Supabase */}
+        {(() => {
+          const existingIds = new Set(matches.map((m) => m.id));
+          const existingGoalIds = new Set(goals.map((g) => g.id));
+          const missingMatches = INITIAL_MATCHES.filter((m) => !existingIds.has(m.id));
+          const missingGoals = INITIAL_GOALS.filter((g) => !existingGoalIds.has(g.id));
+          if (missingMatches.length === 0 || matches.length === 0) return null;
+          return (
+            <div className="mb-6 p-4 rounded-2xl bg-amber-950/40 border border-amber-500/40 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3">
+                <span className="text-xl">⚡</span>
+                <div>
+                  <h4 className="text-xs font-bold text-amber-200">
+                    ¡Nuevos datos oficiales disponibles ({missingMatches.length} partidos y {missingGoals.length} goles pendientes)!
+                  </h4>
+                  <p className="text-[11px] text-amber-300/80">
+                    Pulsa aquí para añadir los nuevos partidos oficiales (J11-J13), goleadores y asistentes directamente a tus tablas y a Supabase.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setMatches((prev) => [...prev, ...missingMatches]);
+                  setGoals((prev) => [...prev, ...missingGoals]);
+
+                  if (isSupabaseConnected) {
+                    missingMatches.forEach((m) => saveMatchToSupabase(m));
+                    missingGoals.forEach((g) => saveGoalToSupabase(g));
+                  }
+                  showToast(`¡${missingMatches.length} partidos y ${missingGoals.length} goles nuevos añadidos con éxito!`);
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-md transition whitespace-nowrap cursor-pointer flex items-center gap-1.5"
+              >
+                <span>+ Cargar {missingMatches.length} Partidos Nuevos</span>
+              </button>
+            </div>
+          );
+        })()}
 
         {activeTab === 'standings' && (
           <LeagueStandings
@@ -331,6 +449,7 @@ export default function App() {
             onOpenNewGoalForMatch={(mId, tId) => handleOpenNewGoal(mId, tId)}
             onEditGoal={handleEditGoal}
             onDeleteGoal={handleDeleteGoal}
+            onOpenScanModal={() => setIsScanModalOpen(true)}
           />
         )}
 
@@ -379,6 +498,14 @@ export default function App() {
           setMatches(syncedMatches);
           setGoals(syncedGoals);
         }}
+        showToast={showToast}
+        onConfigSaved={refreshSupabaseData}
+      />
+
+      <ScanMatchScreenshotModal
+        isOpen={isScanModalOpen}
+        onClose={() => setIsScanModalOpen(false)}
+        onSaveMatchAndGoals={handleSaveScannedMatchAndGoals}
         showToast={showToast}
       />
 
